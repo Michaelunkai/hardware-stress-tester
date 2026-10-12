@@ -28,7 +28,7 @@ public static class SmokeRunner
 
         try
         {
-            await RunChecksAsync(Check);
+            await RunChecksAsync(window, Check);
         }
         catch (Exception ex)
         {
@@ -68,14 +68,24 @@ public static class SmokeRunner
         await window.Dispatcher.InvokeAsync(() =>
         {
             foreach (var line in results) window.Log(line);
+        });
+
+        // Settle everything (engines, sensor driver, FORCE MAX) BEFORE the process exits —
+        // an orderly teardown, never a race into process death.
+        window.PrepareForExit();
+        await Task.Delay(600);
+
+        await window.Dispatcher.InvokeAsync(() =>
+        {
             Application.Current.Shutdown(hardFail ? 2 : 0);
         });
     }
 
-    private static async Task RunChecksAsync(CheckFn check)
+    private static async Task RunChecksAsync(MainWindow window, CheckFn check)
     {
         await Task.Run(async () =>
         {
+            App.Breadcrumb("smoke: checks begin");
             var sys = SystemProbe.Probe();
             check("System info",
                 !string.IsNullOrWhiteSpace(sys.CpuName) && sys.RamTotalGb > 0,
@@ -84,13 +94,12 @@ public static class SmokeRunner
 
             try
             {
-                using var monitor = new HardwareMonitor();
-                monitor.Open();
-                var m = monitor.Read();
-                check("Hardware monitor", true,
-                    $"opened (admin={HardwareMonitor.IsAdmin()}, " +
-                    $"cpuTemp={(m.CpuTempC?.ToString("0") ?? "n/a")}, gpuTemp={(m.GpuTempC?.ToString("0") ?? "n/a")})",
-                    soft: false);
+                bool up = window.SensorUp;
+                var m = window.SensorSnapshot();
+                check("Hardware monitor", up,
+                    $"sensor host connected (admin={Monitoring.HardwareMonitor.IsAdmin()}, " +
+                    $"cpuTemp={(m?.CpuTempC?.ToString("0") ?? "n/a")}, gpuTemp={(m?.GpuTempC?.ToString("0") ?? "n/a")})",
+                    soft: true);
             }
             catch (Exception ex)
             {
@@ -104,8 +113,10 @@ public static class SmokeRunner
                 LoadPercent = 100
             };
             cpu.Start();
+            App.Breadcrumb("smoke: cpu fma started");
             await Task.Delay(700);
             cpu.Stop();
+            App.Breadcrumb("smoke: cpu fma stopped");
             var cs = cpu.Snapshot();
             check("CPU FMA kernel", cs.TotalWork > 0 && cs.WorkPerSecond > 0,
                 $"{cs.TotalWork:N0} flops · {cs.WorkPerSecond / 1e9:0.##} GFLOPS", soft: false);
@@ -125,18 +136,19 @@ public static class SmokeRunner
 
             var ram = new Engines.RamTester { TargetBytes = 128L << 20, VerifyEnabled = true };
             ram.Start();
+            App.Breadcrumb("smoke: ram started");
             await Task.Delay(900);
             ram.Stop();
+            App.Breadcrumb("smoke: ram stopped");
             var rs = ram.Snapshot();
             check("RAM write+verify", rs.TotalWork > 0 && ram.ErrorCount == 0,
                 $"{rs.TotalWork / (1024 * 1024):N0} MB exercised · {rs.WorkPerSecond / (1024 * 1024):0} MB/s · {ram.ErrorCount} errors",
                 soft: false);
 
+            App.Breadcrumb("smoke: fan controls probing");
             try
             {
-                using var probe = new HardwareMonitor();
-                probe.Open();
-                int controls = probe.CountFanControls();
+                int controls = window.SensorFanControlCount();
                 check("Fan PWM controls", controls > 0,
                     $"{controls} controllable fan(s) found (FORCE MAX can pin them to 100%)",
                     soft: true);
@@ -148,8 +160,10 @@ public static class SmokeRunner
 
             var disk = new Engines.DiskStressor { TargetBytes = 512L << 20, LoadPercent = 100, VerifyEnabled = true };
             disk.Start();
+            App.Breadcrumb("smoke: disk started");
             await Task.Delay(700);
             disk.Stop();
+            App.Breadcrumb("smoke: disk stopped");
             var dsk = disk.Snapshot();
             check("DISK write+verify", dsk.TotalWork > 0 && disk.ErrorCount == 0,
                 $"{dsk.TotalWork / (1024 * 1024):N0} MB exercised · {dsk.WorkPerSecond / (1024 * 1024):0} MB/s · {disk.ErrorCount} checksum errors",
@@ -159,6 +173,7 @@ public static class SmokeRunner
             {
                 var gpu = new Engines.GpuStressor { LoadPercent = 100 };
                 gpu.Start();
+                App.Breadcrumb("smoke: gpu started");
                 // Device + shader compile can take a few seconds on first init —
                 // wait until draws actually flow (or 6s) before measuring.
                 int waited = 0;
@@ -169,6 +184,7 @@ public static class SmokeRunner
                 }
                 await Task.Delay(600);
                 gpu.Stop();
+                App.Breadcrumb("smoke: gpu stopped");
                 var gs = gpu.Snapshot();
                 bool clean = gs.ErrorText is null;
                 check("GPU D3D11 shader stress", gs.TotalWork > 0 && clean,

@@ -127,11 +127,16 @@ Interpreting results:
 - **Never freezes** — the UI thread runs at `Highest` priority; `STOP` flips atomic flags
   and all joins/memory-frees/GC happen on background threads; sensor reads are individually
   guarded. Worst case under full load you still get instant STOP.
+- **Never crashes — even from flaky drivers** — all motherboard/sensor-driver access runs
+  in a **sandboxed child process** (`--sensorhost`). If the driver ever hangs or faults on
+  an exotic board, StressLab kills and respawns the sandbox and keeps stressing; the GUI
+  cannot inherit the failure.
 - **Never crashes silently** — engine workers catch everything into a visible Error state,
   `DispatcherUnhandledException`, `AppDomain.UnhandledException` and unobserved task
   exceptions are logged to `crash-log.txt` next to the exe.
 - **Never cooks your hardware** — 1-second sensor polling; CPU/GPU °C limits (editable in
-  the header) abort the whole run with a red banner the moment they trip.
+  the header) abort the whole run with a red banner the moment they trip; FORCE MAX
+  restores fans and the power plan automatically on toggle-off or exit.
 
 ## Headless verification
 
@@ -141,13 +146,13 @@ captures a screenshot of a live run, writes `smoke-result.txt` and exits
 
 ```text
 PASS: System info — AMD Ryzen 7 9800X3D 8-Core Processor, 16 threads, 93.6 GB RAM
-PASS: Hardware monitor — opened (admin=True, gpuTemp=39)
-PASS: CPU FMA kernel — 3,599,761,408 flops · 5.11 GFLOPS
-PASS: CPU integer kernel — 354,664,448 ops · 879.4 M/s
-PASS: RAM write+verify — 2,592 MB exercised · 18650 MB/s · 0 errors
+PASS: Hardware monitor — sensor host connected (admin=True, gpuTemp=45)
+PASS: CPU FMA kernel — 23,883,481,088 flops · 33.72 GFLOPS
+PASS: CPU integer kernel — 351,780,864 ops · 845.7 M/s
+PASS: RAM write+verify — 10,464 MB exercised · 18354 MB/s · 0 errors
 PASS: Fan PWM controls — 3 controllable fan(s) found (FORCE MAX can pin them to 100%)
-PASS: DISK write+verify — 3,237 MB exercised · 2252 MB/s · 0 checksum errors
-PASS: GPU D3D11 shader stress — 2,047 draws · 8345 GFLOPS est.
+PASS: DISK write+verify — 2,258 MB exercised · 3324 MB/s · 0 checksum errors
+PASS: GPU D3D11 shader stress — 2,047 draws · 6982 GFLOPS est.
 PASS: live demo run + screenshot + detailed report & telemetry CSV generated
 ```
 

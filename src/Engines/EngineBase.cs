@@ -12,8 +12,11 @@ public sealed class EngineStats
 {
     public EngineState State { get; set; } = EngineState.Idle;
     public double WorkPerSecond { get; set; }
-    /// <summary>Secondary rate where meaningful (RAM: verify bytes/s; others: 0).</summary>
+    /// <summary>Secondary rate where meaningful (RAM/DISK: verify bytes/s; others: 0).</summary>
     public double AuxWorkPerSecond { get; set; }
+    /// <summary>Measured busy-ratio of the engine itself, 0-100 (GPU: duty cycle including
+    /// fence waits; CPU: configured duty). Used when no sensor reports load.</summary>
+    public double DutyPercent { get; set; }
     public long TotalWork { get; set; }
     public double ElapsedSeconds { get; set; }
     public string StatusLine { get; set; } = "Idle";

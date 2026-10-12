@@ -25,7 +25,7 @@ public partial class MainWindow : Window
     private readonly GpuStressor _gpu = new();
     private readonly RamTester _ram = new();
     private readonly DiskStressor _disk = new();
-    private readonly HardwareMonitor _monitor = new();
+    private readonly SensorClient _monitor = new();
     private readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _monitorTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly SessionRecord _session = new();
@@ -95,16 +95,19 @@ public partial class MainWindow : Window
         RamSpark.SetColor(Color.FromRgb(0xB5, 0x7B, 0xFF));
         DiskSpark.SetColor(Color.FromRgb(0xFF, 0x9F, 0x43));
 
+        bool sensorUp = false;
         await Task.Run(() =>
         {
             try
             {
-                _monitor.Open();
+                sensorUp = _monitor.Start();
                 _gpuName = _monitor.GpuName.Length > 0 ? _monitor.GpuName : GpuStressor.TryGetAdapterName();
                 int controls = _monitor.CountFanControls();
                 LogSafe(controls > 0
                     ? $"Hardware ready — {controls} controllable fan(s) detected (FORCE MAX can pin them to 100%)."
                     : "Hardware ready — no fan PWM controls found (FORCE MAX will still boost the power plan).");
+                if (!sensorUp)
+                    LogSafe("Sensor host unavailable — temperatures and fan pinning are disabled; all engines still work.");
             }
             catch (Exception ex)
             {
@@ -113,7 +116,7 @@ public partial class MainWindow : Window
             }
         });
 
-        _lastSnapshot = _monitor.Opened ? ReadMonitorSafe() : new MetricsSnapshot();
+        _lastSnapshot = ReadMonitorSafe() ?? _lastSnapshot;
         _probed = true;
 
         var sys = SystemProbe.Probe(_gpuName);
@@ -161,7 +164,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private MetricsSnapshot ReadMonitorSafe()
+    private MetricsSnapshot? ReadMonitorSafe()
     {
         try
         {
@@ -169,13 +172,13 @@ public partial class MainWindow : Window
         }
         catch
         {
-            return new MetricsSnapshot();
+            return null;
         }
     }
 
     private void UpdateAdminBadge()
     {
-        if (_monitor.Elevated)
+        if (HardwareMonitor.IsAdmin())
         {
             AdminBadgeText.Text = "Administrator";
         }
@@ -300,7 +303,7 @@ public partial class MainWindow : Window
         _telemetry.GpuName = _gpuName;
         _telemetry.RamTotalGb = _session.RamTotalGb;
         _telemetry.LogicalCores = Environment.ProcessorCount;
-        _telemetry.Elevated = _monitor.Elevated;
+        _telemetry.Elevated = HardwareMonitor.IsAdmin();
         _telemetry.OsVersion = Environment.OSVersion.VersionString;
         _telemetry.AppVersion = GetType().Assembly.GetName().Version?.ToString(3) ?? "1.1.0";
         _telemetry.CpuEnabled = cpu;
@@ -329,9 +332,9 @@ public partial class MainWindow : Window
         string parts = string.Join(" + ", new[] { cpu ? "CPU" : null, gpu ? "GPU" : null, ram ? "RAM" : null, disk ? "DISK" : null });
         Log($"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}.");
         _telemetry.AddEvent("INFO", $"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}");
-        Log(_monitor.Elevated
+        Log(_monitor.Connected
             ? "Administrator: temperature watchdog is armed."
-            : "Not elevated: temperatures may be unavailable — the thermal watchdog will be limited.");
+            : "Not elevated / sensor host down: temperatures may be unavailable — the thermal watchdog will be limited.");
     }
 
     private void StopRun(string reason)
@@ -436,8 +439,9 @@ public partial class MainWindow : Window
     private void MonitorTick()
     {
         if (!_probed) return;
-        _lastSnapshot = ReadMonitorSafe();
-        var m = _lastSnapshot;
+        var m = ReadMonitorSafe();
+        if (m is null) return;
+        _lastSnapshot = m;
 
         if (m.CpuLoadPercent is float cl) _session.CpuLoadMetric.Add(cl);
         if (m.CpuTempC is float ct) _session.CpuTemp.Add(ct);
@@ -471,10 +475,13 @@ public partial class MainWindow : Window
             double ramVerifyMbps = rs.AuxWorkPerSecond / (1024.0 * 1024.0);
             double diskWriteMbps = Math.Max(0, ds.WorkPerSecond - ds.AuxWorkPerSecond) / (1024.0 * 1024.0);
             double diskReadMbps = ds.AuxWorkPerSecond / (1024.0 * 1024.0);
+            float? gpuLoadTelemetry = m.GpuLoadPercent;
+            if (gs.State == EngineState.Running && gs.DutyPercent > 0 && (gpuLoadTelemetry is null || gpuLoadTelemetry < 1f))
+                gpuLoadTelemetry = (float)Math.Min(100.0, gs.DutyPercent);
             _telemetry.AddSample(new TelemetrySample(
                 DateTime.Now,
                 m.CpuLoadPercent, m.CpuTempC, m.CpuPowerW, m.CpuClockMhz,
-                m.GpuLoadPercent, m.GpuTempC,
+                gpuLoadTelemetry, m.GpuTempC,
                 m.GpuMemUsedMb is float vramMb ? vramMb / 1024f : null,
                 m.RamUsedPercent,
                 m.FansRpm,
@@ -556,14 +563,20 @@ public partial class MainWindow : Window
         };
         LogEngineErrorOnce("CPU", cs);
 
-        GpuBig.Text = MetricsSnapshot.F(m.GpuLoadPercent);
-        GpuGauge.Value = m.GpuLoadPercent ?? 0;
-        if (_running) GpuSpark.Push(m.GpuLoadPercent ?? 0);
+        var gs = _gpu.Snapshot();
+        // Real-time GPU usage: prefer the hardware sensor; when a board doesn't expose
+        // one (common on AMD APUs), show the engine's own measured busy-ratio instead
+        // of a misleading 0%.
+        float? gpuShown = m.GpuLoadPercent;
+        if (gs.State == EngineState.Running && gs.DutyPercent > 0 && (gpuShown is null || gpuShown < 1f))
+            gpuShown = (float)Math.Min(100.0, gs.DutyPercent);
+        GpuBig.Text = MetricsSnapshot.F(gpuShown);
+        GpuGauge.Value = gpuShown ?? 0;
+        if (_running) GpuSpark.Push(gpuShown ?? 0);
         GpuTempChip.Text = MetricsSnapshot.F(m.GpuTempC, "0", " °C");
         GpuVramChip.Text = m.GpuMemUsedMb is float used && m.GpuMemTotalMb is float tot
             ? $"{used / 1024f:0.0} / {tot / 1024f:0.0} GB"
             : MetricsSnapshot.F(m.GpuMemUsedMb, "0", " MB");
-        var gs = _gpu.Snapshot();
         GpuStatusLine.Text = gs.State switch
         {
             EngineState.Running => $"RUNNING · {gs.StatusLine}",
@@ -705,6 +718,12 @@ public partial class MainWindow : Window
 
     // ---------------------------------------------------------------- infra
 
+    internal bool SensorUp => _monitor.Connected;
+
+    internal MetricsSnapshot? SensorSnapshot() => ReadMonitorSafe();
+
+    internal int SensorFanControlCount() => _monitor.CountFanControls();
+
     internal void Log(string message)
     {
         LogList.Items.Add($"[{DateTime.Now:HH:mm:ss}]  {message}");
@@ -756,25 +775,53 @@ public partial class MainWindow : Window
         encoder.Save(stream);
     }
 
+    private bool _cleanedUp;
+
     private void EmergencyCleanup()
-    {        _uiTimer.Stop();
+    {
+        if (_cleanedUp) return;
+        _cleanedUp = true;
+
+        _uiTimer.Stop();
         _monitorTimer.Stop();
         _running = false;
+        App.Breadcrumb("cleanup: begin");
+
+        // Orderly, bounded shutdown: flags first (engines notice within one burst),
+        // then blocking stops (each join is timeout-bounded and typically <300 ms),
+        // then the sensor driver — inline, so the process never tears down while a
+        // native driver call is still in flight (that races into access violations).
         try { _cpu.RequestStop(); } catch { }
         try { _gpu.RequestStop(); } catch { }
         try { _ram.RequestStop(); } catch { }
         try { _disk.RequestStop(); } catch { }
+        App.Breadcrumb("cleanup: engine flags set");
+        try { _cpu.Stop(); } catch { }
+        try { _gpu.Stop(); } catch { }
+        try { _ram.Stop(); } catch { }
+        try { _disk.Stop(); } catch { }
+        App.Breadcrumb("cleanup: engines stopped");
+
         try
         {
+            App.Breadcrumb("cleanup: force-max off begin");
             if (ForceMaxButton is not null) ForceMaxButton.IsChecked = false;
-            DisengageForceMax(); // fans back to automatic + previous power plan, always
+            DisengageForceMax();
+            App.Breadcrumb("cleanup: force-max off done");
         }
         catch { }
+
+        App.Breadcrumb("cleanup: monitor disposing");
+        try { _monitor.Dispose(); } catch { }
+        App.Breadcrumb("cleanup: monitor disposed");
         SetThreadExecutionState(ES_CONTINUOUS);
-        // Sensor teardown in the background so the window can close instantly.
-        Task.Run(() =>
-        {
-            try { _monitor.Dispose(); } catch { }
-        });
+        App.Breadcrumb("cleanup: done");
+    }
+
+    /// <summary>Called by the smoke runner before Shutdown so every engine, the sensor
+    /// driver and FORCE MAX are fully settled before the process exits.</summary>
+    internal void PrepareForExit()
+    {
+        Dispatcher.Invoke(EmergencyCleanup);
     }
 }

@@ -14,6 +14,15 @@ public partial class App : Application
     {
         base.OnStartup(e);
         HookGlobalExceptionNets();
+
+        // sandboxed sensor-driver child process — headless, no window, no engines
+        if (e.Args is { Length: 2 } sha && sha[0].Equals("--sensorhost", StringComparison.OrdinalIgnoreCase))
+        {
+            StressLab.Monitoring.SensorHostService.Run(sha[1]);
+            Shutdown(0);
+            return;
+        }
+
         Breadcrumb($"startup — args: {string.Join(" ", CliArgs.Skip(1))}");
         DispatcherUnhandledException += (_, args) =>
         {

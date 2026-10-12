@@ -64,6 +64,7 @@ float4 psMain(VsOut i) : SV_Target
     private int _generation;
     private long _draws;
     private bool _deviceLost;
+    private double _dutyPercent;
 
     private static bool IsDeviceRemoved(Exception ex)
         => ex.Message.Contains("removed", StringComparison.OrdinalIgnoreCase)
@@ -91,6 +92,7 @@ float4 psMain(VsOut i) : SV_Target
         {
             _stop = false;
             _draws = 0;
+            _dutyPercent = 0;
             _startTimestamp = Stopwatch.GetTimestamp();
             _stats = new EngineStats { State = EngineState.Running, StatusLine = "Warming up…" };
             var load = Math.Clamp(LoadPercent, 1, 100);
@@ -157,6 +159,7 @@ float4 psMain(VsOut i) : SV_Target
             long nextSyncAt = 1;
             while (!_stop && !_deviceLost && generation == Volatile.Read(ref _generation))
             {
+                long cycleStart = Stopwatch.GetTimestamp();
                 long burstEnd = Stopwatch.GetTimestamp() + burstTicks;
                 do
                 {
@@ -194,8 +197,16 @@ float4 psMain(VsOut i) : SV_Target
                     && Stopwatch.GetTimestamp() < burstEnd);
                 Interlocked.Exchange(ref _draws, draws);
                 context.Flush();
+
+                // measured busy-ratio of this cycle: draws + fence wait are GPU-busy time,
+                // the governor sleep is idle time. Boards with no load sensor still get a
+                // real utilization number from this.
+                long busyTicks = Stopwatch.GetTimestamp() - cycleStart;
                 int sleep = Governor.ComputeSleepMs(load, Governor.BurstMs);
                 if (sleep > 0) Thread.Sleep(sleep);
+                long totalTicks = Stopwatch.GetTimestamp() - cycleStart;
+                double duty = totalTicks > 0 ? 100.0 * busyTicks / totalTicks : 0;
+                lock (_lock) _dutyPercent = _dutyPercent <= 0 ? duty : _dutyPercent * 0.7 + duty * 0.3;
             }
 
             context.ClearState();
@@ -243,6 +254,8 @@ float4 psMain(VsOut i) : SV_Target
             {
                 State = _stats.State,
                 WorkPerSecond = _stats.WorkPerSecond,
+                AuxWorkPerSecond = _stats.AuxWorkPerSecond,
+                DutyPercent = _stats.DutyPercent,
                 TotalWork = _stats.TotalWork,
                 ElapsedSeconds = _stats.ElapsedSeconds,
                 StatusLine = _stats.StatusLine,
@@ -270,6 +283,7 @@ float4 psMain(VsOut i) : SV_Target
         _stats.TotalWork = draws;
         _stats.ElapsedSeconds = elapsed;
         _stats.WorkPerSecond = elapsed > 0.2 ? draws / elapsed : 0;
+        _stats.DutyPercent = _dutyPercent;
         _stats.State = state;
         _stats.StatusLine = $"{EstimateGflops(draws, elapsed):0} GFLOPS (est.) · {_stats.WorkPerSecond:0} draws/s";
     }
