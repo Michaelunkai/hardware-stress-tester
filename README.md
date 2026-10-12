@@ -37,10 +37,26 @@ while doing it:
 
 | Component | What it does | What you see |
 |---|---|---|
-| **CPU** | Up to all logical cores × 3 kernels: floating-point FMA (GFLOPS), integer mix (branch-heavy), prime sieve (cache + branch) | load %, °C, watts, GHz, GFLOPS/M-ops per second |
+| **CPU** | Up to all logical cores × 3 kernels: SIMD floating-point FMA (Vector256/512 — pushes more heat than scalar code), integer mix (branch-heavy), prime sieve (cache + branch) | load %, °C, watts, GHz, GFLOPS/M-ops per second |
 | **GPU** | Fullscreen-triangle D3D11 pixel-shader burn-in, offscreen target, no vsync, no display output, device-removal (TDR) detection | load %, °C, VRAM, draws/s + estimated GFLOPS |
 | **RAM** | Memtest-style pattern write + verify across up to 90% of physical RAM (auto-capped, auto-reserved), 5 rotating patterns | in-use %, MB/s read/write, error count |
-| **ALL** | Every enabled engine runs simultaneously — the real "gaming + compiling" worst case | everything at once |
+| **DISK** | Rewrites a bounded scratch file (1–32 GB) in shuffled block order at full speed, then verifies every 1 MiB block's XxHash3 checksum on read-back. Scratch file is deleted automatically. Some SSD wear per run is normal. | MB/s write/read, total written, checksum error count |
+| **ALL** | Every enabled engine runs simultaneously — the real "gaming + compiling + downloading" worst case | everything at once |
+
+### ⚡ FORCE MAX
+
+One toggle that forces the whole machine toward maximum:
+
+- **Fans pinned to 100%** — every controllable PWM fan StressLab can see through the
+  hardware driver (run as administrator). The FANS chip in the header shows live RPM.
+- **Aggressive-boost power plan** — duplicates your current Windows power scheme, sets
+  min/max processor state to 100% with Aggressive boost mode, and activates it.
+- **No sleep** — the system cannot idle to sleep mid-test.
+
+Everything is restored automatically when you toggle it off or close the app (fans back
+to their BIOS curves, original power plan re-activated, duplicate plan deleted). If a
+board exposes no PWM controls, FORCE MAX still boosts the power plan — StressLab tells
+you exactly what it found.
 
 Extras: presets (CPU only / GPU only / RAM only / 🔥 ALL TOGETHER), run durations from 30 s
 to unlimited, live activity log, a branded taskbar/title-bar icon, and **automatic
@@ -125,11 +141,13 @@ captures a screenshot of a live run, writes `smoke-result.txt` and exits
 
 ```text
 PASS: System info — AMD Ryzen 7 9800X3D 8-Core Processor, 16 threads, 93.6 GB RAM
-PASS: Hardware monitor — opened (admin=True, gpuTemp=40)
-PASS: CPU FMA kernel — 3,431,268,352 flops · 4.72 GFLOPS
-PASS: CPU integer kernel — 298,463,232 ops · 725.2 M/s
-PASS: RAM write+verify — 9,344 MB exercised · 21333 MB/s · 0 errors
-PASS: GPU D3D11 shader stress — 2,047 draws · 7576 GFLOPS est.
+PASS: Hardware monitor — opened (admin=True, gpuTemp=39)
+PASS: CPU FMA kernel — 3,599,761,408 flops · 5.11 GFLOPS
+PASS: CPU integer kernel — 354,664,448 ops · 879.4 M/s
+PASS: RAM write+verify — 2,592 MB exercised · 18650 MB/s · 0 errors
+PASS: Fan PWM controls — 3 controllable fan(s) found (FORCE MAX can pin them to 100%)
+PASS: DISK write+verify — 3,237 MB exercised · 2252 MB/s · 0 checksum errors
+PASS: GPU D3D11 shader stress — 2,047 draws · 8345 GFLOPS est.
 PASS: live demo run + screenshot + detailed report & telemetry CSV generated
 ```
 

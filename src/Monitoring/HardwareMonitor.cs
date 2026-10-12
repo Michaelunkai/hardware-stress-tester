@@ -41,7 +41,7 @@ public sealed class HardwareMonitor : IDisposable
             IsCpuEnabled = true,
             IsGpuEnabled = true,
             IsMemoryEnabled = true,
-            IsMotherboardEnabled = false,
+            IsMotherboardEnabled = true, // fan controls + RPM live on the SuperIO chip
             IsStorageEnabled = false,
             IsNetworkEnabled = false,
             IsControllerEnabled = false,
@@ -72,6 +72,7 @@ public sealed class HardwareMonitor : IDisposable
         float? cpuTemp = null, cpuLoad = null, cpuPower = null, cpuClock = null;
         float? gpuTemp = null, gpuLoad = null, gpuMemUsed = null, gpuMemTotal = null;
         float? ramLoad = null, ramUsedGb = null, ramAvailGb = null;
+        float? fansRpm = null;
 
         if (_computer is not null)
         {
@@ -145,6 +146,25 @@ public sealed class HardwareMonitor : IDisposable
                     // to the first positive load reading so the card still shows activity.
                     gpuLoad ??= anyLoad;
                 }
+                else if (type == "Motherboard" || type.Contains("SuperIO", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var s in hw.Sensors)
+                    {
+                        if (s.SensorType == SensorType.Fan && s.Value is float rpm && rpm > 0f
+                            && (!fansRpm.HasValue || rpm > fansRpm))
+                            fansRpm = rpm;
+                    }
+                    foreach (var sub in hw.SubHardware)
+                    {
+                        try { sub.Update(); } catch { }
+                        foreach (var s in sub.Sensors)
+                        {
+                            if (s.SensorType == SensorType.Fan && s.Value is float subRpm && subRpm > 0f
+                                && (!fansRpm.HasValue || subRpm > fansRpm))
+                                fansRpm = subRpm;
+                        }
+                    }
+                }
                 else if (type == "Memory")
                 {
                     foreach (var s in hw.Sensors)
@@ -200,8 +220,60 @@ public sealed class HardwareMonitor : IDisposable
             GpuMemTotalMb = Normalize(gpuMemTotal, 0f, 262144f),
             RamUsedPercent = Normalize(ramUsedPct, 0f, 100f),
             RamUsedGb = ramUsed,
-            RamTotalGb = ramTotal
+            RamTotalGb = ramTotal,
+            FansRpm = Normalize(fansRpm, 0f, 60000f)
         };
+    }
+
+    /// <summary>Pins every controllable fan to a fixed duty percentage (0-100).
+    /// Returns the number of fan controls that were actually set.</summary>
+    public int SetAllFanControls(float percent)
+        => ApplyFanControls(c => c.SetSoftware(Math.Clamp(percent, 0f, 100f)));
+
+    /// <summary>Returns every controllable fan to its automatic/BIOS curve.</summary>
+    public int RestoreAllFanControls()
+        => ApplyFanControls(c => c.SetDefault());
+
+    /// <summary>Counts fan PWM controls without touching them.</summary>
+    public int CountFanControls()
+    {
+        int count = 0;
+        ForEachControl(_ => count++);
+        return count;
+    }
+
+    private int ApplyFanControls(Action<LibreHardwareMonitor.Hardware.IControl> apply)
+    {
+        int count = 0;
+        ForEachControl(control =>
+        {
+            try
+            {
+                apply(control);
+                count++;
+            }
+            catch
+            {
+                // a single stubborn fan control must not stop the others
+            }
+        });
+        return count;
+    }
+
+    private void ForEachControl(Action<LibreHardwareMonitor.Hardware.IControl> action)
+    {
+        if (_computer is null) return;
+        void ScanHardware(IHardware hw)
+        {
+            try { hw.Update(); } catch { }
+            foreach (var s in hw.Sensors)
+            {
+                if (s.SensorType == SensorType.Control && s.Control is not null)
+                    action(s.Control);
+            }
+            foreach (var sub in hw.SubHardware) ScanHardware(sub);
+        }
+        foreach (var hw in _computer.Hardware) ScanHardware(hw);
     }
 
     private static float? Normalize(float? value, float min, float max)

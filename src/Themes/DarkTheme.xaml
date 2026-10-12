@@ -11,6 +11,8 @@
     <SolidColorBrush x:Key="AccentCpuBrush" Color="#4DA3FF"/>
     <SolidColorBrush x:Key="AccentGpuBrush" Color="#3DDC97"/>
     <SolidColorBrush x:Key="AccentRamBrush" Color="#B57BFF"/>
+    <SolidColorBrush x:Key="AccentDiskBrush" Color="#FF9F43"/>
+    <SolidColorBrush x:Key="AccentMaxBrush" Color="#FFB454"/>
     <SolidColorBrush x:Key="DangerBrush" Color="#F25C6A"/>
     <LinearGradientBrush x:Key="AccentGradient" StartPoint="0,0" EndPoint="1,1">
         <GradientStop Color="#4DA3FF" Offset="0"/>
@@ -257,6 +259,35 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="MaxToggle" TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{StaticResource TextDimBrush}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="ChipBorder" Background="{StaticResource FieldBrush}"
+                            BorderBrush="#243040" BorderThickness="1"
+                            CornerRadius="9" Padding="12,7">
+                        <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ChipBorder" Property="Background" Value="#1B2330"/>
+                            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="ChipBorder" Property="Background" Value="#4A2A08"/>
+                            <Setter TargetName="ChipBorder" Property="BorderBrush" Value="{StaticResource AccentMaxBrush}"/>
+                            <Setter Property="Foreground" Value="{StaticResource AccentMaxBrush}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

@@ -158,6 +158,15 @@ public static class Analyzer
         var ramA = RamErrors(samples.Count > 0 ? samples[^1].RamErrors : 0, ramErrorEvents);
         if (ramA is not null) findings.Add(ramA);
 
+        if (t.DiskEnabled)
+        {
+            long diskErrors = samples.Count > 0 ? samples[^1].DiskErrors : 0;
+            if (diskErrors > 0)
+                findings.Add(new Anomaly("FAIL", $"DISK verification errors detected ({diskErrors:N0})",
+                    "Read-back checksums did not match what was written. This indicates failing storage, " +
+                    "an unstable storage controller/overclock, or (rarely) a cable problem — not a StressLab fault."));
+        }
+
         var tdrEvent = t.Events.FirstOrDefault(e => e.Message.Contains("driver reset", StringComparison.OrdinalIgnoreCase));
         var gpuA = GpuDeviceReset(tdrEvent is not null, tdrEvent?.Message);
         if (gpuA is not null) findings.Add(gpuA);

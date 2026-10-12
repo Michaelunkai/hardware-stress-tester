@@ -14,6 +14,7 @@ public sealed class MetricsSnapshot
     public float? RamUsedPercent { get; init; }
     public float? RamUsedGb { get; init; }
     public float? RamTotalGb { get; init; }
+    public float? FansRpm { get; init; }
 
     public static string F(float? value, string format = "0", string suffix = "")
         => value is null ? "—" : value.Value.ToString(format) + suffix;

@@ -121,8 +121,8 @@ public class AnalyzerTests
         };
         t.Begin();
         t.AddSample(new TelemetrySample(
-            DateTime.Now, 100, 70, 80, 4700, 99, 60, 0.4f, 31,
-            2e9, 1400, 6900, 9000, 500, 3, "Running", "Running", "Running"));
+            DateTime.Now, 100, 70, 80, 4700, 99, 60, 0.4f, 31, 1200,
+            2e9, 1400, 6900, 9000, 500, 800, 600, 0, 3, "Running", "Running", "Running", "Running"));
         t.AddEvent("FAIL", "3 memory verification errors detected so far (first corrupt addresses are recorded by the engine)");
         t.AddEvent("FAIL", "GPU engine error: GPU driver reset detected (device removed / TDR). The stress outran this driver.");
 
@@ -145,8 +145,8 @@ public class AnalyzerTests
         for (int i = 0; i < 20; i++)
         {
             t.AddSample(new TelemetrySample(
-                DateTime.Now.AddSeconds(i), 100, 70, 80, 4700, 99, 60, 0.4f, 31,
-                2e9, 1400, 6900, 9000, 500, 0, "Running", "Running", "Running"));
+                DateTime.Now.AddSeconds(i), 100, 70, 80, 4700, 99, 60, 0.4f, 31, 1200,
+                2e9, 1400, 6900, 9000, 500, 800, 600, 0, 0, "Running", "Running", "Running", "Running"));
         }
 
         var findings = Analyzer.DetectAll(t);
@@ -172,8 +172,8 @@ public class DetailedReportTests
         for (int i = 0; i < 10; i++)
         {
             t.AddSample(new TelemetrySample(
-                DateTime.Now.AddSeconds(i), 100, 70 + i * 0.5f, 80, 4700, 99, 60 + i * 0.5f, 0.4f, 31,
-                2e9, 1400, 6900, 9000, 500, 0, "Running", "Running", "Running"));
+                DateTime.Now.AddSeconds(i), 100, 70 + i * 0.5f, 80, 4700, 99, 60 + i * 0.5f, 0.4f, 31, 1500,
+                2e9, 1400, 6900, 9000, 500, 800, 600, 0, 0, "Running", "Running", "Running", "Running"));
         }
         t.AddEvent("INFO", "Stress run started — CPU + GPU + RAM — duration unlimited");
         t.EndedAt = DateTime.Now.AddSeconds(10);
@@ -203,8 +203,8 @@ public class DetailedReportTests
     {
         var t = SampleTelemetry();
         t.AddSample(new TelemetrySample(
-            DateTime.Now.AddSeconds(11), 100, 75, 82, 4700, 99, 66, 0.4f, 31,
-            2e9, 1400, 6900, 9000, 500, 3, "Running", "Running", "Running"));
+            DateTime.Now.AddSeconds(11), 100, 75, 82, 4700, 99, 66, 0.4f, 31, 1500,
+            2e9, 1400, 6900, 9000, 500, 800, 600, 0, 3, "Running", "Running", "Running", "Running"));
         t.AddEvent("FAIL", "3 memory verification errors detected so far (first corrupt addresses are recorded by the engine)");
 
         string md = DetailedReport.BuildMarkdown(t);

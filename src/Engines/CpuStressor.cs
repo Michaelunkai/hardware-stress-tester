@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace StressLab.Engines;
 
@@ -174,6 +177,15 @@ public sealed class CpuStressor : IStressEngine
         double sink = 0;
         long localFlops = 0;
         long burstTicks = (long)(Stopwatch.Frequency * Governor.BurstMs / 1000.0);
+
+        // SIMD paths push far more FLOPs (and heat) than scalar JIT code; the generic
+        // vector APIs carry software fallbacks, so every machine gets the widest path
+        // its CPU supports.
+        bool has512 = Vector512.IsHardwareAccelerated;
+        bool has256 = Vector256.IsHardwareAccelerated;
+        ref double aRef = ref MemoryMarshal.GetArrayDataReference(a);
+        ref double bRef = ref MemoryMarshal.GetArrayDataReference(b);
+
         while (Alive(generation))
         {
             long burstEnd = Stopwatch.GetTimestamp() + burstTicks;
@@ -181,19 +193,42 @@ public sealed class CpuStressor : IStressEngine
             {
                 for (int r = 0; r < 16; r++)
                 {
-                    for (int i = 0; i < n; i += 8)
+                    if (has512)
                     {
-                        double v0 = a[i], v1 = a[i + 1], v2 = a[i + 2], v3 = a[i + 3];
-                        double v4 = a[i + 4], v5 = a[i + 5], v6 = a[i + 6], v7 = a[i + 7];
-                        v0 = v0 * b[i] + 1.0000001; v1 = v1 * b[i + 1] + 1.0000001;
-                        v2 = v2 * b[i + 2] + 1.0000001; v3 = v3 * b[i + 3] + 1.0000001;
-                        v4 = v4 * b[i + 4] + 1.0000001; v5 = v5 * b[i + 5] + 1.0000001;
-                        v6 = v6 * b[i + 6] + 1.0000001; v7 = v7 * b[i + 7] + 1.0000001;
-                        a[i] = v0; a[i + 1] = v1; a[i + 2] = v2; a[i + 3] = v3;
-                        a[i + 4] = v4; a[i + 5] = v5; a[i + 6] = v6; a[i + 7] = v7;
+                        for (int i = 0; i < n; i += 8)
+                        {
+                            var va = Vector512.LoadUnsafe(ref aRef, (nuint)i);
+                            var vb = Vector512.LoadUnsafe(ref bRef, (nuint)i);
+                            Vector512.FusedMultiplyAdd(va, vb, Vector512.Create(1.0000001))
+                                     .StoreUnsafe(ref aRef, (nuint)i);
+                        }
+                    }
+                    else if (has256)
+                    {
+                        for (int i = 0; i < n; i += 4)
+                        {
+                            var va = Vector256.LoadUnsafe(ref aRef, (nuint)i);
+                            var vb = Vector256.LoadUnsafe(ref bRef, (nuint)i);
+                            Vector256.FusedMultiplyAdd(va, vb, Vector256.Create(1.0000001))
+                                     .StoreUnsafe(ref aRef, (nuint)i);
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < n; i += 8)
+                        {
+                            double v0 = a[i], v1 = a[i + 1], v2 = a[i + 2], v3 = a[i + 3];
+                            double v4 = a[i + 4], v5 = a[i + 5], v6 = a[i + 6], v7 = a[i + 7];
+                            v0 = v0 * b[i] + 1.0000001; v1 = v1 * b[i + 1] + 1.0000001;
+                            v2 = v2 * b[i + 2] + 1.0000001; v3 = v3 * b[i + 3] + 1.0000001;
+                            v4 = v4 * b[i + 4] + 1.0000001; v5 = v5 * b[i + 5] + 1.0000001;
+                            v6 = v6 * b[i + 6] + 1.0000001; v7 = v7 * b[i + 7] + 1.0000001;
+                            a[i] = v0; a[i + 1] = v1; a[i + 2] = v2; a[i + 3] = v3;
+                            a[i + 4] = v4; a[i + 5] = v5; a[i + 6] = v6; a[i + 7] = v7;
+                        }
                     }
                 }
-                localFlops += 16L * n * 2; // 16 rounds × n FMA × 2 flops
+                localFlops += 16L * n * 2; // 16 rounds × n FMA lanes × 2 flops
             }
             while (Alive(generation) && Stopwatch.GetTimestamp() < burstEnd);
             sink += a[0];

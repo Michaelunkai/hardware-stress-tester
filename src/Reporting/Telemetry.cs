@@ -11,15 +11,20 @@ public sealed record TelemetrySample(
     float? GpuTemp,
     float? GpuVramGb,
     float? RamUsedPct,
+    float? FansRpm,
     double CpuRate,
     double GpuDrawsPerSecond,
     double GpuGflops,
     double RamWriteMbps,
     double RamVerifyMbps,
+    double DiskWriteMbps,
+    double DiskReadMbps,
+    long DiskErrors,
     long RamErrors,
     string CpuState,
     string GpuState,
-    string RamState);
+    string RamState,
+    string DiskState);
 
 /// <summary>A timestamped notable occurrence. Severity: INFO, WARN or FAIL.</summary>
 public sealed record TelemetryEvent(DateTime Time, string Severity, string Message);
@@ -48,12 +53,16 @@ public sealed class RunTelemetry
     public bool CpuEnabled { get; set; }
     public bool GpuEnabled { get; set; }
     public bool RamEnabled { get; set; }
+    public bool DiskEnabled { get; set; }
+    public bool ForceMax { get; set; }
     public string CpuKernel { get; set; } = "";
     public int CpuThreads { get; set; }
     public int CpuLoad { get; set; }
     public int GpuLoad { get; set; }
     public double RamTargetGb { get; set; }
     public bool RamVerify { get; set; }
+    public double DiskTargetGb { get; set; }
+    public int DiskLoad { get; set; }
     public float CpuLimit { get; set; }
     public float GpuLimit { get; set; }
 

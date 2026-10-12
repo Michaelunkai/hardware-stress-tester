@@ -134,6 +134,29 @@ public static class SmokeRunner
 
             try
             {
+                using var probe = new HardwareMonitor();
+                probe.Open();
+                int controls = probe.CountFanControls();
+                check("Fan PWM controls", controls > 0,
+                    $"{controls} controllable fan(s) found (FORCE MAX can pin them to 100%)",
+                    soft: true);
+            }
+            catch (Exception ex)
+            {
+                check("Fan PWM controls", false, ex.Message, soft: true);
+            }
+
+            var disk = new Engines.DiskStressor { TargetBytes = 512L << 20, LoadPercent = 100, VerifyEnabled = true };
+            disk.Start();
+            await Task.Delay(700);
+            disk.Stop();
+            var dsk = disk.Snapshot();
+            check("DISK write+verify", dsk.TotalWork > 0 && disk.ErrorCount == 0,
+                $"{dsk.TotalWork / (1024 * 1024):N0} MB exercised · {dsk.WorkPerSecond / (1024 * 1024):0} MB/s · {disk.ErrorCount} checksum errors",
+                soft: false);
+
+            try
+            {
                 var gpu = new Engines.GpuStressor { LoadPercent = 100 };
                 gpu.Start();
                 // Device + shader compile can take a few seconds on first init —

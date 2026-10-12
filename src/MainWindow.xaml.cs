@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -14,15 +15,23 @@ namespace StressLab;
 
 public partial class MainWindow : Window
 {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint SetThreadExecutionState(uint esFlags);
+
+    private const uint ES_CONTINUOUS = 0x80000000u;
+    private const uint ES_SYSTEM_REQUIRED = 0x00000001u;
+
     private readonly CpuStressor _cpu = new();
     private readonly GpuStressor _gpu = new();
     private readonly RamTester _ram = new();
+    private readonly DiskStressor _disk = new();
     private readonly HardwareMonitor _monitor = new();
     private readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _monitorTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly SessionRecord _session = new();
     private readonly RunTelemetry _telemetry = new();
     private long _lastRamErrors;
+    private long _lastDiskErrors;
     private bool _cpuThermalWarned;
     private bool _gpuThermalWarned;
 
@@ -80,10 +89,11 @@ public partial class MainWindow : Window
 
     private async Task OnLoadedCoreAsync()
     {
-        foreach (var spark in new[] { CpuSpark, GpuSpark, RamSpark }) spark.Reset();
+        foreach (var spark in new[] { CpuSpark, GpuSpark, RamSpark, DiskSpark }) spark.Reset();
         CpuSpark.SetColor(Color.FromRgb(0x4D, 0xA3, 0xFF));
         GpuSpark.SetColor(Color.FromRgb(0x3D, 0xDC, 0x97));
         RamSpark.SetColor(Color.FromRgb(0xB5, 0x7B, 0xFF));
+        DiskSpark.SetColor(Color.FromRgb(0xFF, 0x9F, 0x43));
 
         await Task.Run(() =>
         {
@@ -91,6 +101,10 @@ public partial class MainWindow : Window
             {
                 _monitor.Open();
                 _gpuName = _monitor.GpuName.Length > 0 ? _monitor.GpuName : GpuStressor.TryGetAdapterName();
+                int controls = _monitor.CountFanControls();
+                LogSafe(controls > 0
+                    ? $"Hardware ready — {controls} controllable fan(s) detected (FORCE MAX can pin them to 100%)."
+                    : "Hardware ready — no fan PWM controls found (FORCE MAX will still boost the power plan).");
             }
             catch (Exception ex)
             {
@@ -179,12 +193,49 @@ public partial class MainWindow : Window
         else StartRun();
     }
 
+    private void ForceMax_Click(object sender, RoutedEventArgs e)
+    {
+        if (ForceMaxButton.IsChecked == true)
+        {
+            int fans = 0;
+            try { fans = _monitor.SetAllFanControls(100f); }
+            catch (Exception ex) { Log($"Fan control failed: {ex.Message}"); }
+
+            var (powerOk, powerNote) = (false, "");
+            try { (powerOk, powerNote) = PowerBooster.Engage(); }
+            catch (Exception ex) { Log($"Power boost failed: {ex.Message}"); }
+
+            _telemetry.ForceMax = true;
+            _telemetry.AddEvent("WARN", $"FORCE MAX engaged — {fans} fan control(s) pinned to 100%, power plan: {(powerOk ? "aggressive boost" : "unavailable")}");
+            Log($"⚡ FORCE MAX engaged — {fans} fan control(s) pinned to 100%{(fans == 0 ? " (none found: run as administrator, or this board exposes no PWM controls)" : "")} · power plan: {(powerOk ? $"boosted — {powerNote}" : powerNote)}.");
+        }
+        else
+        {
+            DisengageForceMax();
+        }
+    }
+
+    private void DisengageForceMax()
+    {
+        if (ForceMaxButton is null || (!ForceMaxButton.IsChecked.HasValue && !_telemetry.ForceMax)) return;
+        int fans = 0;
+        try { fans = _monitor.RestoreAllFanControls(); } catch { }
+        try { PowerBooster.Restore(); } catch { }
+        if (_telemetry.ForceMax)
+        {
+            _telemetry.ForceMax = false;
+            _telemetry.AddEvent("INFO", $"FORCE MAX disengaged — {fans} fan control(s) back to automatic, previous power plan restored");
+            Log("FORCE MAX off — fans back to automatic, previous power plan restored.");
+        }
+    }
+
     private void StartRun()
     {
         bool cpu = CpuEnabled.IsChecked == true;
         bool gpu = GpuEnabled.IsChecked == true;
         bool ram = RamEnabled.IsChecked == true;
-        if (!cpu && !gpu && !ram)
+        bool disk = DiskEnabled.IsChecked == true;
+        if (!cpu && !gpu && !ram && !disk)
         {
             Log("Select at least one component (or a preset) before starting.");
             return;
@@ -203,6 +254,7 @@ public partial class MainWindow : Window
         _session.RamTotalGb = totalBytes / 1073741824.0;
 
         ThermalBanner.Visibility = Visibility.Collapsed;
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED); // never sleep mid-test
 
         if (cpu)
         {
@@ -229,10 +281,18 @@ public partial class MainWindow : Window
             _session.RamVerify = _ram.VerifyEnabled;
             _ram.Start();
         }
+        if (disk)
+        {
+            _disk.TargetBytes = DiskStressor.ComputeTargetBytes((long)(DiskGbSlider.Value * (1L << 30)));
+            _disk.LoadPercent = (int)DiskLoadSlider.Value;
+            _disk.VerifyEnabled = DiskVerifyBox.IsChecked == true;
+            _disk.Start();
+        }
 
         CpuSpark.Reset();
         GpuSpark.Reset();
         RamSpark.Reset();
+        DiskSpark.Reset();
 
         // fresh telemetry record with the full configuration snapshot
         _telemetry.Begin();
@@ -246,22 +306,27 @@ public partial class MainWindow : Window
         _telemetry.CpuEnabled = cpu;
         _telemetry.GpuEnabled = gpu;
         _telemetry.RamEnabled = ram;
+        _telemetry.DiskEnabled = disk;
+        _telemetry.ForceMax = ForceMaxButton.IsChecked == true;
         _telemetry.CpuKernel = CpuKernelBox.Text;
         _telemetry.CpuThreads = (int)CpuThreadsSlider.Value;
         _telemetry.CpuLoad = (int)CpuLoadSlider.Value;
         _telemetry.GpuLoad = (int)GpuLoadSlider.Value;
         _telemetry.RamTargetGb = _session.RamTargetGb;
         _telemetry.RamVerify = _ram.VerifyEnabled;
+        _telemetry.DiskTargetGb = _disk.TargetBytes / 1073741824.0;
+        _telemetry.DiskLoad = _disk.LoadPercent;
         _telemetry.CpuLimit = float.TryParse(CpuLimitBox.Text, out float cfgCpu) ? cfgCpu : ThermalWatchdog.DefaultCpuLimitC;
         _telemetry.GpuLimit = float.TryParse(GpuLimitBox.Text, out float cfgGpu) ? cfgGpu : ThermalWatchdog.DefaultGpuLimitC;
         _lastRamErrors = 0;
+        _lastDiskErrors = 0;
         _cpuThermalWarned = false;
         _gpuThermalWarned = false;
 
         _running = true;
         SetRunUi(true);
         _uiTimer.Start();
-        string parts = string.Join(" + ", new[] { cpu ? "CPU" : null, gpu ? "GPU" : null, ram ? "RAM" : null });
+        string parts = string.Join(" + ", new[] { cpu ? "CPU" : null, gpu ? "GPU" : null, ram ? "RAM" : null, disk ? "DISK" : null });
         Log($"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}.");
         _telemetry.AddEvent("INFO", $"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}");
         Log(_monitor.Elevated
@@ -279,6 +344,8 @@ public partial class MainWindow : Window
         try { _cpu.RequestStop(); } catch { }
         try { _gpu.RequestStop(); } catch { }
         try { _ram.RequestStop(); } catch { }
+        try { _disk.RequestStop(); } catch { }
+        SetThreadExecutionState(ES_CONTINUOUS); // allow sleep again
 
         _session.EndedAt = DateTime.Now;
         _session.DurationSeconds = (DateTime.UtcNow - _runStartUtc).TotalSeconds;
@@ -344,6 +411,9 @@ public partial class MainWindow : Window
         GpuLoadSlider.IsEnabled = !running;
         RamGbSlider.IsEnabled = !running;
         RamVerifyBox.IsEnabled = !running;
+        DiskGbSlider.IsEnabled = !running;
+        DiskLoadSlider.IsEnabled = !running;
+        DiskVerifyBox.IsEnabled = !running;
         CpuLimitBox.IsEnabled = !running;
         GpuLimitBox.IsEnabled = !running;
         DurationBox.IsEnabled = !running;
@@ -391,24 +461,44 @@ public partial class MainWindow : Window
             _session.RamErrors = _ram.ErrorCount;
             if (rs.WorkPerSecond > 0) _session.RamThroughput.Add(rs.WorkPerSecond / (1024.0 * 1024.0));
 
+            var ds = _disk.Snapshot();
+
             float cpuLimit = float.TryParse(CpuLimitBox.Text, out float parsedCpu) ? parsedCpu : ThermalWatchdog.DefaultCpuLimitC;
             float gpuLimit = float.TryParse(GpuLimitBox.Text, out float parsedGpu) ? parsedGpu : ThermalWatchdog.DefaultGpuLimitC;
 
             // ---- 1 Hz telemetry sample of the whole system + every engine
             double ramWriteMbps = Math.Max(0, rs.WorkPerSecond - rs.AuxWorkPerSecond) / (1024.0 * 1024.0);
             double ramVerifyMbps = rs.AuxWorkPerSecond / (1024.0 * 1024.0);
+            double diskWriteMbps = Math.Max(0, ds.WorkPerSecond - ds.AuxWorkPerSecond) / (1024.0 * 1024.0);
+            double diskReadMbps = ds.AuxWorkPerSecond / (1024.0 * 1024.0);
             _telemetry.AddSample(new TelemetrySample(
                 DateTime.Now,
                 m.CpuLoadPercent, m.CpuTempC, m.CpuPowerW, m.CpuClockMhz,
                 m.GpuLoadPercent, m.GpuTempC,
                 m.GpuMemUsedMb is float vramMb ? vramMb / 1024f : null,
                 m.RamUsedPercent,
+                m.FansRpm,
                 cs.WorkPerSecond / 1e9,   // GFLOPS for the FMA kernel, G work-units/s otherwise
                 gs.WorkPerSecond,
                 gs.WorkPerSecond > 0 ? GpuStressor.EstimateGflops((long)gs.WorkPerSecond, 1.0) : 0,
                 ramWriteMbps, ramVerifyMbps,
+                diskWriteMbps, diskReadMbps,
+                _disk.ErrorCount,
                 _ram.ErrorCount,
-                cs.State.ToString(), gs.State.ToString(), rs.State.ToString()));
+                cs.State.ToString(), gs.State.ToString(), rs.State.ToString(), ds.State.ToString()));
+
+            if (_ram.ErrorCount > _lastRamErrors)
+            {
+                _telemetry.AddEvent("FAIL", $"{_ram.ErrorCount:N0} memory verification errors detected so far (first corrupt addresses are recorded by the engine)");
+                Log($"⚠ RAM verification errors: {_ram.ErrorCount:N0} — see the report for details.");
+                _lastRamErrors = _ram.ErrorCount;
+            }
+            if (_disk.ErrorCount > _lastDiskErrors)
+            {
+                _telemetry.AddEvent("FAIL", $"{_disk.ErrorCount:N0} disk checksum errors detected so far (block offsets are recorded by the engine)");
+                Log($"⚠ DISK checksum errors: {_disk.ErrorCount:N0} — see the report for details.");
+                _lastDiskErrors = _disk.ErrorCount;
+            }
 
             if (_ram.ErrorCount > _lastRamErrors)
             {
@@ -500,6 +590,23 @@ public partial class MainWindow : Window
         };
         LogEngineErrorOnce("RAM", rs);
 
+        var ds = _disk.Snapshot();
+        double diskTotalMbps = ds.WorkPerSecond / (1024.0 * 1024.0);
+        DiskBig.Text = diskTotalMbps < 10 ? diskTotalMbps.ToString("0.0") : diskTotalMbps.ToString("0");
+        DiskGauge.Value = ds.State == EngineState.Running ? 100 : 0;
+        if (_running) DiskSpark.Push(diskTotalMbps);
+        DiskWrittenChip.Text = $"{ds.TotalWork / (1024.0 * 1024.0 * 1024.0):0.0} GB";
+        DiskErrorsChip.Text = _disk.ErrorCount.ToString("N0");
+        FansChip.Text = _lastSnapshot.FansRpm is float rpm ? $"{rpm:0} RPM" : "—";
+        DiskStatusLine.Text = ds.State switch
+        {
+            EngineState.Running => $"RUNNING · {ds.StatusLine}",
+            EngineState.Stopped => $"DONE · {ds.StatusLine}",
+            EngineState.Error => ds.StatusLine,
+            _ => "Idle — enabled, waiting for START"
+        };
+        LogEngineErrorOnce("DISK", ds);
+
         if (_running)
         {
             double elapsed = (DateTime.UtcNow - _runStartUtc).TotalSeconds;
@@ -527,10 +634,11 @@ public partial class MainWindow : Window
         if (sender is not FrameworkElement fe || fe.Tag is not string tag) return;
         switch (tag)
         {
-            case "cpu": CpuEnabled.IsChecked = true; GpuEnabled.IsChecked = false; RamEnabled.IsChecked = false; break;
-            case "gpu": CpuEnabled.IsChecked = false; GpuEnabled.IsChecked = true; RamEnabled.IsChecked = false; break;
-            case "ram": CpuEnabled.IsChecked = false; GpuEnabled.IsChecked = false; RamEnabled.IsChecked = true; break;
-            default: CpuEnabled.IsChecked = true; GpuEnabled.IsChecked = true; RamEnabled.IsChecked = true; break;
+            case "cpu": CpuEnabled.IsChecked = true; GpuEnabled.IsChecked = false; RamEnabled.IsChecked = false; DiskEnabled.IsChecked = false; break;
+            case "gpu": CpuEnabled.IsChecked = false; GpuEnabled.IsChecked = true; RamEnabled.IsChecked = false; DiskEnabled.IsChecked = false; break;
+            case "ram": CpuEnabled.IsChecked = false; GpuEnabled.IsChecked = false; RamEnabled.IsChecked = true; DiskEnabled.IsChecked = false; break;
+            case "disk": CpuEnabled.IsChecked = false; GpuEnabled.IsChecked = false; RamEnabled.IsChecked = false; DiskEnabled.IsChecked = true; break;
+            default: CpuEnabled.IsChecked = true; GpuEnabled.IsChecked = true; RamEnabled.IsChecked = true; DiskEnabled.IsChecked = true; break;
         }
     }
 
@@ -539,6 +647,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(sender, CpuEnabled) && CpuCard is not null) CpuCard.Opacity = CpuEnabled.IsChecked == true ? 1 : 0.45;
         if (ReferenceEquals(sender, GpuEnabled) && GpuCard is not null) GpuCard.Opacity = GpuEnabled.IsChecked == true ? 1 : 0.45;
         if (ReferenceEquals(sender, RamEnabled) && RamCard is not null) RamCard.Opacity = RamEnabled.IsChecked == true ? 1 : 0.45;
+        if (ReferenceEquals(sender, DiskEnabled) && DiskCard is not null) DiskCard.Opacity = DiskEnabled.IsChecked == true ? 1 : 0.45;
     }
 
     private void CpuThreadsSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -559,6 +668,16 @@ public partial class MainWindow : Window
     private void RamGbSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (RamGbValue is not null) RamGbValue.Text = $"{(int)e.NewValue} GB";
+    }
+
+    private void DiskGbSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (DiskGbValue is not null) DiskGbValue.Text = $"{(int)e.NewValue} GB";
+    }
+
+    private void DiskLoadSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (DiskLoadValue is not null) DiskLoadValue.Text = $"{(int)e.NewValue}%";
     }
 
     private void ClearLog_Click(object sender, RoutedEventArgs e) => LogList.Items.Clear();
@@ -607,6 +726,7 @@ public partial class MainWindow : Window
             CpuEnabled.IsChecked = true;
             GpuEnabled.IsChecked = true;
             RamEnabled.IsChecked = true;
+            DiskEnabled.IsChecked = true;
             DurationBox.SelectedIndex = 6;
             ThermalBannerText.Text = "Thermal watchdog armed — the run aborts automatically at the configured limits.";
             ThermalBanner.Visibility = Visibility.Visible;
@@ -637,13 +757,20 @@ public partial class MainWindow : Window
     }
 
     private void EmergencyCleanup()
-    {
-        _uiTimer.Stop();
+    {        _uiTimer.Stop();
         _monitorTimer.Stop();
         _running = false;
         try { _cpu.RequestStop(); } catch { }
         try { _gpu.RequestStop(); } catch { }
         try { _ram.RequestStop(); } catch { }
+        try { _disk.RequestStop(); } catch { }
+        try
+        {
+            if (ForceMaxButton is not null) ForceMaxButton.IsChecked = false;
+            DisengageForceMax(); // fans back to automatic + previous power plan, always
+        }
+        catch { }
+        SetThreadExecutionState(ES_CONTINUOUS);
         // Sensor teardown in the background so the window can close instantly.
         Task.Run(() =>
         {

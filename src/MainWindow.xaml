@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:StressLab.Controls"
         Title="StressLab — Hardware Stress Tester"
         Icon="pack://application:,,,/assets/app.ico"
-        Width="1240" Height="820" MinWidth="1080" MinHeight="720"
+        Width="1420" Height="820" MinWidth="1280" MinHeight="720"
         Background="{StaticResource BgBrush}"
         FontFamily="Segoe UI"
         WindowStartupLocation="CenterScreen">
@@ -55,6 +55,13 @@
                     </StackPanel>
                 </Border>
                 <Border CornerRadius="10" Background="{StaticResource CardBrush}" Padding="12,7" Margin="10,0,0,0" VerticalAlignment="Center"
+                        ToolTip="Live fan speed (fastest reported fan). FORCE MAX pins all controllable fans to 100%.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="FANS" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="FansChip" Text="—" Style="{StaticResource ChipValue}" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+                <Border CornerRadius="10" Background="{StaticResource CardBrush}" Padding="12,7" Margin="10,0,0,0" VerticalAlignment="Center"
                         ToolTip="If a temperature reaches its limit, StressLab instantly stops every engine to protect your hardware.">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="CPU limit" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
@@ -83,7 +90,10 @@
                     <Button Content="CPU only" Style="{StaticResource PresetChip}" Tag="cpu" Click="Preset_Click"/>
                     <Button Content="GPU only" Style="{StaticResource PresetChip}" Tag="gpu" Margin="8,0,0,0" Click="Preset_Click"/>
                     <Button Content="RAM only" Style="{StaticResource PresetChip}" Tag="ram" Margin="8,0,0,0" Click="Preset_Click"/>
+                    <Button Content="DISK only" Style="{StaticResource PresetChip}" Tag="disk" Margin="8,0,0,0" Click="Preset_Click"/>
                     <Button Content="🔥 ALL TOGETHER" Style="{StaticResource PresetChip}" Tag="all" Margin="8,0,0,0" Click="Preset_Click"/>
+                    <ToggleButton x:Name="ForceMaxButton" Content="⚡ FORCE MAX" Style="{StaticResource MaxToggle}" Margin="14,0,0,0" Click="ForceMax_Click"
+                                  ToolTip="Force everything to maximum: pins every controllable fan to 100%, switches Windows to an aggressive-boost power plan (min/max processor state 100%), and prevents sleep. Restored automatically when toggled off or on exit."/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="18,0,0,0" VerticalAlignment="Center">
                     <TextBlock Text="Duration" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
@@ -104,7 +114,7 @@
         </Border>
 
         <!-- component cards -->
-        <UniformGrid Grid.Row="3" Columns="3" Margin="0,14,0,0">
+        <UniformGrid Grid.Row="3" Columns="4" Margin="0,14,0,0">
 
             <!-- ============================== CPU card -->
             <Border x:Name="CpuCard" Background="{StaticResource CardBrush}" CornerRadius="14" Padding="18" Margin="0,0,12,0">
@@ -274,7 +284,7 @@
             </Border>
 
             <!-- ============================== RAM card -->
-            <Border x:Name="RamCard" Background="{StaticResource CardBrush}" CornerRadius="14" Padding="18">
+            <Border x:Name="RamCard" Background="{StaticResource CardBrush}" CornerRadius="14" Padding="18" Margin="0,0,12,0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -342,6 +352,89 @@
                                    Text="Cycles write + verify bit patterns through the allocated blocks. Auto-capped at 90% of physical RAM."/>
                     </Grid>
                     <TextBlock x:Name="RamStatusLine" Grid.Row="6" Style="{StaticResource StatusText}" Margin="0,10,0,0" Text="Idle"/>
+                </Grid>
+            </Border>
+
+            <!-- ============================== DISK card -->
+            <Border x:Name="DiskCard" Background="{StaticResource CardBrush}" CornerRadius="14" Padding="18">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Ellipse Width="10" Height="10" Fill="{StaticResource AccentDiskBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Text="DISK" Style="{StaticResource CardTitle}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <CheckBox x:Name="DiskEnabled" Grid.Column="1" IsChecked="True" Style="{StaticResource ToggleSwitch}"
+                                  Tag="{StaticResource AccentDiskBrush}" ToolTip="Include the DISK in the stress run"
+                                  Checked="EngineToggle_Changed" Unchecked="EngineToggle_Changed"/>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,2">
+                        <TextBlock x:Name="DiskBig" Text="0" Style="{StaticResource BigNumber}"/>
+                        <TextBlock Text="MB/s" Style="{StaticResource BigNumberUnit}" VerticalAlignment="Bottom" Margin="6,0,0,8"/>
+                    </StackPanel>
+                    <controls:GaugeBar x:Name="DiskGauge" Grid.Row="2" Value="0" Accent="{StaticResource AccentDiskBrush}"/>
+                    <WrapPanel Grid.Row="3" Margin="0,10,0,0">
+                        <Border Background="{StaticResource FieldBrush}" CornerRadius="8" Padding="9,5" Margin="0,0,8,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="WRITTEN" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="DiskWrittenChip" Text="0 GB" Style="{StaticResource ChipValue}" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="{StaticResource FieldBrush}" CornerRadius="8" Padding="9,5" Margin="0,0,8,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="ERRORS" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="DiskErrorsChip" Text="0" Style="{StaticResource ChipValue}" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </WrapPanel>
+                    <controls:Sparkline x:Name="DiskSpark" Grid.Row="4" Height="52" Margin="0,10,0,0"/>
+                    <Grid Grid.Row="5" Margin="0,12,0,0" VerticalAlignment="Top">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="SCRATCH" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
+                            <Slider x:Name="DiskGbSlider" Grid.Column="1" Minimum="1" Maximum="32" Value="4"
+                                    Margin="10,0" VerticalAlignment="Center" ValueChanged="DiskGbSlider_ValueChanged"/>
+                            <TextBlock x:Name="DiskGbValue" Grid.Column="2" Style="{StaticResource ChipValue}" Width="44"
+                                       TextAlignment="Right" Text="4 GB"/>
+                        </Grid>
+                        <Grid Grid.Row="1" Margin="0,9,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="LOAD" Style="{StaticResource ChipLabel}" VerticalAlignment="Center"/>
+                            <Slider x:Name="DiskLoadSlider" Grid.Column="1" Minimum="10" Maximum="100" Value="100"
+                                    Margin="10,0" VerticalAlignment="Center" ValueChanged="DiskLoadSlider_ValueChanged"/>
+                            <TextBlock x:Name="DiskLoadValue" Grid.Column="2" Style="{StaticResource ChipValue}" Width="36"
+                                       TextAlignment="Right" Text="100%"/>
+                        </Grid>
+                        <CheckBox x:Name="DiskVerifyBox" Grid.Row="2" Content="Verify read-back checksums (XxHash3)"
+                                  Style="{StaticResource MiniCheck}" IsChecked="True" Margin="0,10,0,0"/>
+                    </Grid>
+                    <TextBlock x:Name="DiskStatusLine" Grid.Row="6" Style="{StaticResource StatusText}" Margin="0,10,0,0"
+                               Text="Idle — rewrites a bounded scratch file; some SSD wear per run is normal."/>
                 </Grid>
             </Border>
         </UniformGrid>

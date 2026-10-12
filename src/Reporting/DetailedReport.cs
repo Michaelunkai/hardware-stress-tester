@@ -51,6 +51,8 @@ public static class DetailedReport
         sb.AppendLine($"| CPU | {(t.CpuEnabled ? $"enabled — {t.CpuKernel}, {t.CpuThreads} threads, {t.CpuLoad}% duty cycle" : "off")} |");
         sb.AppendLine($"| GPU | {(t.GpuEnabled ? $"enabled — {t.GpuLoad}% duty cycle, offscreen 1024×1024 shader burn-in" : "off")} |");
         sb.AppendLine($"| RAM | {(t.RamEnabled ? $"enabled — {t.RamTargetGb:0.#} GB target, verification {(t.RamVerify ? "ON" : "OFF")}" : "off")} |");
+        sb.AppendLine($"| DISK | {(t.DiskEnabled ? $"enabled — {t.DiskTargetGb:0.#} GB scratch, {t.DiskLoad}% duty cycle, checksum verification ON" : "off")} |");
+        sb.AppendLine($"| FORCE MAX | {(t.ForceMax ? "ON — fans pinned to 100%, aggressive boost power plan" : "off")} |");
         sb.AppendLine($"| Watchdog | CPU limit {t.CpuLimit:0}°C · GPU limit {t.GpuLimit:0}°C |");
         sb.AppendLine();
 
@@ -105,9 +107,18 @@ public static class DetailedReport
             ("System RAM in use", s => s.RamUsedPct, "%", "0"),
             ("Write bandwidth", s => s.RamWriteMbps, "MB/s", "0"),
             ("Verify bandwidth", s => s.RamVerifyMbps, "MB/s", "0"));
+        AppendEngine(sb, "DISK", t.DiskEnabled, samples,
+            ("Write bandwidth", s => s.DiskWriteMbps, "MB/s", "0"),
+            ("Read bandwidth", s => s.DiskReadMbps, "MB/s", "0"),
+            ("Fan speed (max)", s => s.FansRpm, "RPM", "0"));
 
         long finalErrors = samples.Count > 0 ? samples[^1].RamErrors : 0;
         sb.AppendLine($"- **RAM integrity:** {(t.RamEnabled ? (t.RamVerify ? $"{finalErrors:N0} verification errors across {samples.Count:N0} checked seconds — {(finalErrors == 0 ? "✅ memory is stable" : "❌ memory is NOT stable")}" : "verification disabled for this run") : "RAM engine off")}");
+        long finalDiskErrors = samples.Count > 0 ? samples[^1].DiskErrors : 0;
+        if (t.DiskEnabled)
+            sb.AppendLine($"- **DISK integrity:** {finalDiskErrors:N0} checksum errors — {(finalDiskErrors == 0 ? "✅ storage verified clean" : "❌ storage is NOT reliable")}");
+        if (t.ForceMax)
+            sb.AppendLine("- **FORCE MAX:** fans were pinned to 100% and the power plan ran in aggressive-boost mode for this run (restored afterwards).");
         sb.AppendLine();
 
         // ---------------------------------------------------------------- events
@@ -133,13 +144,13 @@ public static class DetailedReport
         }
         else
         {
-            sb.AppendLine("Time | CPU % | CPU °C | CPU W | GPU % | GPU °C | VRAM GB | RAM % | CPU rate | GPU draws/s | GPU GFLOPS | RAM W/V MB/s | Errors");
-            sb.AppendLine("---|---|---|---|---|---|---|---|---|---|---|---|---");
+            sb.AppendLine("Time | CPU % | CPU °C | CPU W | GPU % | GPU °C | VRAM GB | RAM % | FANS RPM | CPU rate | GPU draws/s | GPU GFLOPS | RAM W/V MB/s | DISK W/R MB/s | Errors");
+            sb.AppendLine("---|---|---|---|---|---|---|---|---|---|---|---|---|---|---");
             int stride = Math.Max(1, (int)Math.Ceiling(samples.Count / 120.0));
             for (int i = 0; i < samples.Count; i += stride)
             {
                 var s = samples[i];
-                sb.AppendLine($"{s.Time:HH:mm:ss} | {F(s.CpuLoad)} | {F(s.CpuTemp)} | {F(s.CpuPower)} | {F(s.GpuLoad)} | {F(s.GpuTemp)} | {F(s.GpuVramGb, "0.0")} | {F(s.RamUsedPct)} | {s.CpuRate:0} | {s.GpuDrawsPerSecond:0} | {s.GpuGflops:0} | {s.RamWriteMbps:0}/{s.RamVerifyMbps:0} | {s.RamErrors}");
+                sb.AppendLine($"{s.Time:HH:mm:ss} | {F(s.CpuLoad)} | {F(s.CpuTemp)} | {F(s.CpuPower)} | {F(s.GpuLoad)} | {F(s.GpuTemp)} | {F(s.GpuVramGb, "0.0")} | {F(s.RamUsedPct)} | {F(s.FansRpm)} | {s.CpuRate:0} | {s.GpuDrawsPerSecond:0} | {s.GpuGflops:0} | {s.RamWriteMbps:0}/{s.RamVerifyMbps:0} | {s.DiskWriteMbps:0}/{s.DiskReadMbps:0} | {s.RamErrors + s.DiskErrors}");
             }
             if (stride > 1)
                 sb.AppendLine();
@@ -190,20 +201,23 @@ public static class DetailedReport
     public static void WriteCsv(RunTelemetry t, string path)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("timestamp,cpu_load_pct,cpu_temp_c,cpu_power_w,cpu_clock_mhz,gpu_load_pct,gpu_temp_c,gpu_vram_gb,ram_used_pct,cpu_rate,gpu_draws_per_sec,gpu_gflops_est,ram_write_mbps,ram_verify_mbps,ram_errors,cpu_state,gpu_state,ram_state");
+        sb.AppendLine("timestamp,cpu_load_pct,cpu_temp_c,cpu_power_w,cpu_clock_mhz,gpu_load_pct,gpu_temp_c,gpu_vram_gb,ram_used_pct,fans_rpm,cpu_rate,gpu_draws_per_sec,gpu_gflops_est,ram_write_mbps,ram_verify_mbps,disk_write_mbps,disk_read_mbps,disk_errors,ram_errors,cpu_state,gpu_state,ram_state,disk_state");
         foreach (var s in t.Samples)
         {
             sb.AppendLine(string.Join(',',
                 s.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
                 N(s.CpuLoad), N(s.CpuTemp), N(s.CpuPower, "0.0"), N(s.CpuClock),
-                N(s.GpuLoad), N(s.GpuTemp), N(s.GpuVramGb, "0.00"), N(s.RamUsedPct),
+                N(s.GpuLoad), N(s.GpuTemp), N(s.GpuVramGb, "0.00"), N(s.RamUsedPct), N(s.FansRpm),
                 s.CpuRate.ToString("0", CultureInfo.InvariantCulture),
                 s.GpuDrawsPerSecond.ToString("0", CultureInfo.InvariantCulture),
                 s.GpuGflops.ToString("0", CultureInfo.InvariantCulture),
                 s.RamWriteMbps.ToString("0", CultureInfo.InvariantCulture),
                 s.RamVerifyMbps.ToString("0", CultureInfo.InvariantCulture),
+                s.DiskWriteMbps.ToString("0", CultureInfo.InvariantCulture),
+                s.DiskReadMbps.ToString("0", CultureInfo.InvariantCulture),
+                s.DiskErrors.ToString(CultureInfo.InvariantCulture),
                 s.RamErrors.ToString(CultureInfo.InvariantCulture),
-                s.CpuState, s.GpuState, s.RamState));
+                s.CpuState, s.GpuState, s.RamState, s.DiskState));
         }
         File.WriteAllText(path, sb.ToString());
     }
