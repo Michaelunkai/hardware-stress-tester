@@ -43,8 +43,27 @@ while doing it:
 | **ALL** | Every enabled engine runs simultaneously — the real "gaming + compiling" worst case | everything at once |
 
 Extras: presets (CPU only / GPU only / RAM only / 🔥 ALL TOGETHER), run durations from 30 s
-to unlimited, live activity log, and a **Markdown report export** with per-run averages,
-min/max, work totals and any thermal events.
+to unlimited, live activity log, a branded taskbar/title-bar icon, and **automatic
+post-run reports** (see below).
+
+## Reports — know about the smallest problem
+
+The moment a run finishes, StressLab writes two files into a `reports\` folder next to the
+exe (no clicking needed):
+
+1. **`StressLab-Report-<timestamp>.md`** — the full report:
+   - a **verdict badge** up top: ✅ ALL CLEAR · ⚠️ PASSED WITH WARNINGS · ❌ PROBLEMS FOUND
+   - system + exact configuration tables
+   - **automated findings** — every detector that fired, with evidence:
+     thermal-margin breaches, sustained throughput decline (throttling), throughput
+     instability, missing temperature sensors, RAM verification errors, GPU driver resets
+   - per-engine deep-dive tables: min · avg · median · p95 · max for every metric
+   - the complete event timeline (start, thermal approaches, errors, stops)
+   - a sample-by-sample telemetry table (downsampled for readability)
+2. **`StressLab-Telemetry-<timestamp>.csv`** — every 1 Hz sample of every metric at full
+   resolution, for spreadsheets or scripts.
+
+The **Export report** button re-saves the same detailed report anywhere you choose.
 
 ## Requirements
 
@@ -111,7 +130,7 @@ PASS: CPU FMA kernel — 3,431,268,352 flops · 4.72 GFLOPS
 PASS: CPU integer kernel — 298,463,232 ops · 725.2 M/s
 PASS: RAM write+verify — 9,344 MB exercised · 21333 MB/s · 0 errors
 PASS: GPU D3D11 shader stress — 2,047 draws · 7576 GFLOPS est.
-PASS: live demo run + screenshot captured
+PASS: live demo run + screenshot + detailed report & telemetry CSV generated
 ```
 
 ## Build from source

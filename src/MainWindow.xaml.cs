@@ -21,6 +21,10 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _monitorTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly SessionRecord _session = new();
+    private readonly RunTelemetry _telemetry = new();
+    private long _lastRamErrors;
+    private bool _cpuThermalWarned;
+    private bool _gpuThermalWarned;
 
     private MetricsSnapshot _lastSnapshot = new();
     private DateTime _runStartUtc;
@@ -37,6 +41,7 @@ public partial class MainWindow : Window
             && _loggedEngineErrors.Add($"{engine}:{stats.ErrorText}"))
         {
             Log($"{engine} engine stopped with an error: {stats.ErrorText}");
+            _telemetry.AddEvent("FAIL", $"{engine} engine error: {stats.ErrorText}");
         }
     }
 
@@ -229,11 +234,36 @@ public partial class MainWindow : Window
         GpuSpark.Reset();
         RamSpark.Reset();
 
+        // fresh telemetry record with the full configuration snapshot
+        _telemetry.Begin();
+        _telemetry.CpuName = _session.CpuName;
+        _telemetry.GpuName = _gpuName;
+        _telemetry.RamTotalGb = _session.RamTotalGb;
+        _telemetry.LogicalCores = Environment.ProcessorCount;
+        _telemetry.Elevated = _monitor.Elevated;
+        _telemetry.OsVersion = Environment.OSVersion.VersionString;
+        _telemetry.AppVersion = GetType().Assembly.GetName().Version?.ToString(3) ?? "1.1.0";
+        _telemetry.CpuEnabled = cpu;
+        _telemetry.GpuEnabled = gpu;
+        _telemetry.RamEnabled = ram;
+        _telemetry.CpuKernel = CpuKernelBox.Text;
+        _telemetry.CpuThreads = (int)CpuThreadsSlider.Value;
+        _telemetry.CpuLoad = (int)CpuLoadSlider.Value;
+        _telemetry.GpuLoad = (int)GpuLoadSlider.Value;
+        _telemetry.RamTargetGb = _session.RamTargetGb;
+        _telemetry.RamVerify = _ram.VerifyEnabled;
+        _telemetry.CpuLimit = float.TryParse(CpuLimitBox.Text, out float cfgCpu) ? cfgCpu : ThermalWatchdog.DefaultCpuLimitC;
+        _telemetry.GpuLimit = float.TryParse(GpuLimitBox.Text, out float cfgGpu) ? cfgGpu : ThermalWatchdog.DefaultGpuLimitC;
+        _lastRamErrors = 0;
+        _cpuThermalWarned = false;
+        _gpuThermalWarned = false;
+
         _running = true;
         SetRunUi(true);
         _uiTimer.Start();
         string parts = string.Join(" + ", new[] { cpu ? "CPU" : null, gpu ? "GPU" : null, ram ? "RAM" : null });
         Log($"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}.");
+        _telemetry.AddEvent("INFO", $"Stress run started — {parts} — duration {(_duration.TotalSeconds == 0 ? "unlimited" : $"{_duration.TotalSeconds:0}s")}");
         Log(_monitor.Elevated
             ? "Administrator: temperature watchdog is armed."
             : "Not elevated: temperatures may be unavailable — the thermal watchdog will be limited.");
@@ -253,6 +283,8 @@ public partial class MainWindow : Window
         _session.EndedAt = DateTime.Now;
         _session.DurationSeconds = (DateTime.UtcNow - _runStartUtc).TotalSeconds;
         CaptureEngineTotals();
+        _telemetry.EndedAt = DateTime.Now;
+        _telemetry.AddEvent("INFO", $"Stress run {reason} after {TimeSpan.FromSeconds(_session.DurationSeconds):hh\\:mm\\:ss}");
 
         SetRunUi(false);
         if (_duration.TotalSeconds > 0) RunProgress.Value = 100;
@@ -260,7 +292,29 @@ public partial class MainWindow : Window
             $"CPU {_session.CpuGflops.Average:0.##} GFLOPS avg · GPU {_session.GpuGflops.Average:0} GFLOPS avg · " +
             $"RAM {_session.RamThroughput.Average:0} MB/s avg · {_session.RamErrors:N0} memory errors.");
         ExportButton.IsEnabled = true;
+        SaveDetailedReport();
         UiTick();
+    }
+
+    private void SaveDetailedReport()
+    {
+        try
+        {
+            string dir = Path.Combine(AppContext.BaseDirectory, "reports");
+            Directory.CreateDirectory(dir);
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            string mdPath = Path.Combine(dir, $"StressLab-Report-{stamp}.md");
+            File.WriteAllText(mdPath, DetailedReport.BuildMarkdown(_telemetry));
+            string csvPath = Path.Combine(dir, $"StressLab-Telemetry-{stamp}.csv");
+            DetailedReport.WriteCsv(_telemetry, csvPath);
+            Log("📋 Detailed report saved:");
+            Log($"   {mdPath}");
+            Log($"   {csvPath} (full-resolution telemetry)");
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not save the detailed report: {ex.Message}");
+        }
     }
 
     private void CaptureEngineTotals()
@@ -339,11 +393,51 @@ public partial class MainWindow : Window
 
             float cpuLimit = float.TryParse(CpuLimitBox.Text, out float parsedCpu) ? parsedCpu : ThermalWatchdog.DefaultCpuLimitC;
             float gpuLimit = float.TryParse(GpuLimitBox.Text, out float parsedGpu) ? parsedGpu : ThermalWatchdog.DefaultGpuLimitC;
+
+            // ---- 1 Hz telemetry sample of the whole system + every engine
+            double ramWriteMbps = Math.Max(0, rs.WorkPerSecond - rs.AuxWorkPerSecond) / (1024.0 * 1024.0);
+            double ramVerifyMbps = rs.AuxWorkPerSecond / (1024.0 * 1024.0);
+            _telemetry.AddSample(new TelemetrySample(
+                DateTime.Now,
+                m.CpuLoadPercent, m.CpuTempC, m.CpuPowerW, m.CpuClockMhz,
+                m.GpuLoadPercent, m.GpuTempC,
+                m.GpuMemUsedMb is float vramMb ? vramMb / 1024f : null,
+                m.RamUsedPercent,
+                cs.WorkPerSecond / 1e9,   // GFLOPS for the FMA kernel, G work-units/s otherwise
+                gs.WorkPerSecond,
+                gs.WorkPerSecond > 0 ? GpuStressor.EstimateGflops((long)gs.WorkPerSecond, 1.0) : 0,
+                ramWriteMbps, ramVerifyMbps,
+                _ram.ErrorCount,
+                cs.State.ToString(), gs.State.ToString(), rs.State.ToString()));
+
+            if (_ram.ErrorCount > _lastRamErrors)
+            {
+                _telemetry.AddEvent("FAIL", $"{_ram.ErrorCount:N0} memory verification errors detected so far (first corrupt addresses are recorded by the engine)");
+                Log($"⚠ RAM verification errors: {_ram.ErrorCount:N0} — see the report for details.");
+                _lastRamErrors = _ram.ErrorCount;
+            }
+
+            if (m.CpuTempC is float cpuWarnTemp && CpuEnabled.IsChecked == true
+                && !_cpuThermalWarned && cpuWarnTemp >= cpuLimit - 10)
+            {
+                _cpuThermalWarned = true;
+                _telemetry.AddEvent("WARN", $"CPU temperature approaching its limit: {cpuWarnTemp:0}°C (limit {cpuLimit:0}°C)");
+                Log($"CPU temperature {cpuWarnTemp:0}°C — approaching the {cpuLimit:0}°C limit.");
+            }
+            if (m.GpuTempC is float gpuWarnTemp && GpuEnabled.IsChecked == true
+                && !_gpuThermalWarned && gpuWarnTemp >= gpuLimit - 10)
+            {
+                _gpuThermalWarned = true;
+                _telemetry.AddEvent("WARN", $"GPU temperature approaching its limit: {gpuWarnTemp:0}°C (limit {gpuLimit:0}°C)");
+                Log($"GPU temperature {gpuWarnTemp:0}°C — approaching the {gpuLimit:0}°C limit.");
+            }
+
             string? trip = ThermalWatchdog.Check(
                 m, cpuLimit, gpuLimit,
                 CpuEnabled.IsChecked == true, GpuEnabled.IsChecked == true);
             if (trip is not null)
             {
+                _telemetry.AddEvent("FAIL", $"THERMAL STOP — {trip}");
                 _session.Events.Add($"[{DateTime.Now:HH:mm:ss}] THERMAL STOP — {trip}");
                 ThermalBannerText.Text = $"⚠ {trip} — every engine was stopped safely.";
                 ThermalBanner.Visibility = Visibility.Visible;
@@ -480,7 +574,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                File.WriteAllText(dlg.FileName, ReportBuilder.BuildMarkdown(_session));
+                File.WriteAllText(dlg.FileName, DetailedReport.BuildMarkdown(_telemetry));
                 Log($"Report saved → {dlg.FileName}");
             }
             catch (Exception ex)

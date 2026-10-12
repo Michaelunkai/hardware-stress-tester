@@ -12,6 +12,8 @@ public sealed class EngineStats
 {
     public EngineState State { get; set; } = EngineState.Idle;
     public double WorkPerSecond { get; set; }
+    /// <summary>Secondary rate where meaningful (RAM: verify bytes/s; others: 0).</summary>
+    public double AuxWorkPerSecond { get; set; }
     public long TotalWork { get; set; }
     public double ElapsedSeconds { get; set; }
     public string StatusLine { get; set; } = "Idle";

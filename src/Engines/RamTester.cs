@@ -224,6 +224,7 @@ public sealed class RamTester : IStressEngine
             {
                 State = _stats.State,
                 WorkPerSecond = _stats.WorkPerSecond,
+                AuxWorkPerSecond = _stats.AuxWorkPerSecond,
                 TotalWork = _stats.TotalWork,
                 ElapsedSeconds = _stats.ElapsedSeconds,
                 StatusLine = _stats.StatusLine,
@@ -251,6 +252,7 @@ public sealed class RamTester : IStressEngine
         _stats.ElapsedSeconds = elapsed;
         double mbps = _writeMbps + _verifyMbps;
         _stats.WorkPerSecond = mbps * 1024.0 * 1024.0;
+        _stats.AuxWorkPerSecond = _verifyMbps * 1024.0 * 1024.0;
         _stats.State = state;
         string phaseText = state == EngineState.Running ? _phase : "Finished";
         _stats.StatusLine = VerifyEnabled

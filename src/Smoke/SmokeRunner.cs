@@ -43,7 +43,13 @@ public static class SmokeRunner
         try
         {
             await window.DemoRunForScreenshotAsync(screenshotPath);
-            results.Add("PASS: live demo run + screenshot captured");
+            string reportsDir = Path.Combine(baseDir, "reports");
+            bool reportWritten = Directory.Exists(reportsDir)
+                && Directory.GetFiles(reportsDir, "StressLab-Report-*.md").Length > 0
+                && Directory.GetFiles(reportsDir, "StressLab-Telemetry-*.csv").Length > 0;
+            results.Add(reportWritten
+                ? "PASS: live demo run + screenshot + detailed report & telemetry CSV generated"
+                : "SOFT: live demo ran but the detailed report/CSV was not found in reports/");
         }
         catch (Exception ex)
         {

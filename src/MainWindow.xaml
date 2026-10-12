@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:StressLab.Controls"
         Title="StressLab — Hardware Stress Tester"
+        Icon="pack://application:,,,/assets/app.ico"
         Width="1240" Height="820" MinWidth="1080" MinHeight="720"
         Background="{StaticResource BgBrush}"
         FontFamily="Segoe UI"

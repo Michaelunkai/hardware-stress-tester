@@ -4,6 +4,7 @@ obj/
 *.user
 publish/
 release/
+/reports/
 /screenshot.png
 /smoke-result.txt
 *.DotSettings.user
