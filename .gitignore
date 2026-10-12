@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+publish/
+release/
+/screenshot.png
+/smoke-result.txt
+*.DotSettings.user
